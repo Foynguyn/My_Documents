@@ -1,7 +1,6 @@
 import express from 'express'
 import userRouter from './routes/users.routers'
 import databaseService from './services/database.services'
-import { log } from 'console'
 import { defaultErrorHandler } from './middlewares/error.middlewares'
 // dựng server
 const app = express()
