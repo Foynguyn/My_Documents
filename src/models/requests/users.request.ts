@@ -32,3 +32,33 @@ export interface emailVerifyReqQuery extends ParsedQs {
 export interface ForgotPasswordReqBody {
   email: string
 }
+
+export interface VerifyForgotPasswordTokenReqBody {
+  forgot_password_token: string
+}
+
+export interface ResetPasswordReqBody {
+  password: string
+  confirm_password: string
+  forgot_password_token: string
+}
+export interface UpdateMeReqBody {
+  name?: string
+  date_of_birth?: Date
+  bio?: string // optional
+  location?: string // optional
+  website?: string // optional
+  username?: string // optional
+  avatar?: string // optional
+  cover_photo?: string // optional}
+}
+
+export interface ChangePasswordReqBody {
+  old_password: string
+  password: string
+  confirm_password: string
+}
+
+export interface RefreshTokenReqBody {
+  refresh_token: string
+}

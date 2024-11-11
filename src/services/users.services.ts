@@ -2,7 +2,7 @@
 
 import User from '~/models/schemas/User.schema'
 import databaseService from './database.services'
-import { loginRegbody, RegisterReqBody } from '~/models/requests/users.request'
+import { loginRegbody, RegisterReqBody, UpdateMeReqBody } from '~/models/requests/users.request'
 import { hashPassword } from '~/utils/crypto'
 import { signToken } from '~/jwt'
 import { TokenType, UserVerifyStatus } from '~/constants/enums'
@@ -56,6 +56,7 @@ class UserService {
     const result = await databaseService.users.insertOne(
       new User({
         _id: user_id,
+        username: `user${user_id.toString()}`,
         email_verify_token,
         ...payload,
         password: hashPassword(payload.password),
@@ -85,11 +86,6 @@ class UserService {
       access_token,
       refresh_token
     }
-  }
-  async checkEmailExist(email: string): Promise<Boolean> {
-    // tìm user nào đang xài email đó, ko có user thì nghĩa là email chưa ai xài
-    const user = await databaseService.users.findOne({ email })
-    return Boolean(user)
   }
 
   async login({ email, password }: loginRegbody) {
@@ -124,18 +120,8 @@ class UserService {
     }
   }
 
-  async checkRefreshToken({ user_id, refresh_token }: { user_id: string; refresh_token: string }) {
-    const refreshToken = await databaseService.refresh_tokens.findOne({
-      user_id: new ObjectId(user_id),
-      token: refresh_token
-    })
-    if (!refreshToken) {
-      throw new ErrorWithStatus({
-        status: HTTP_STATUS.UNAUTHORIZED, // 401
-        message: USERS_MESSAGES.REFRESH_TOKEN_IS_INVALID
-      })
-    }
-    return refresh_token
+  async logout(refresh_token: string) {
+    await databaseService.refresh_tokens.deleteOne({ token: refresh_token })
   }
 
   async findUserById(user_id: string) {
@@ -149,8 +135,24 @@ class UserService {
     return user
   }
 
-  async logout(refresh_token: string) {
-    await databaseService.refresh_tokens.deleteOne({ token: refresh_token })
+  async checkEmailExist(email: string): Promise<Boolean> {
+    // tìm user nào đang xài email đó, ko có user thì nghĩa là email chưa ai xài
+    const user = await databaseService.users.findOne({ email })
+    return Boolean(user)
+  }
+
+  async checkRefreshToken({ user_id, refresh_token }: { user_id: string; refresh_token: string }) {
+    const refreshToken = await databaseService.refresh_tokens.findOne({
+      user_id: new ObjectId(user_id),
+      token: refresh_token
+    })
+    if (!refreshToken) {
+      throw new ErrorWithStatus({
+        status: HTTP_STATUS.UNAUTHORIZED, // 401
+        message: USERS_MESSAGES.REFRESH_TOKEN_IS_INVALID
+      })
+    }
+    return refresh_token
   }
 
   async checkEmailVerifyToken({ user_id, email_verify_token }: { user_id: string; email_verify_token: string }) {
@@ -170,6 +172,34 @@ class UserService {
     }
     // nếu có thì return
     return user // thay thế cho chữ true
+  }
+
+  async checkForgotPasswordToken({
+    user_id,
+    forgot_password_token
+  }: {
+    user_id: string
+    forgot_password_token: string
+  }) {
+    // dùng 2 thông tni trên tìm user
+    //  tìm được thì token ok
+    // ko thì throw với thông báo "token invalid"
+    const user = await databaseService.users.findOne({
+      _id: new ObjectId(user_id),
+      forgot_password_token
+    })
+    if (!user) {
+      throw new ErrorWithStatus({
+        status: HTTP_STATUS.UNAUTHORIZED,
+        message: USERS_MESSAGES.FORGOT_PASSWORD_TOKEN_IS_INVALID
+      })
+    }
+    return user
+  }
+
+  async checkEmailVerified(user_id: string): Promise<boolean> {
+    const user = await databaseService.users.findOne({ _id: new ObjectId(user_id) })
+    return user?.verify == UserVerifyStatus.Verified
   }
 
   async resendEmailVerifyToken(user_id: string) {
@@ -254,6 +284,132 @@ class UserService {
       // gửi email cái link cho người dùng aws | log
       console.log(`gửi mail link xác thực sau:
         http://localhost:8000/reset-password/?forgot_password_token=${forgot_password_token}`)
+    }
+  }
+
+  async resetPassword({ user_id, password }: { user_id: string; password: string }) {
+    await databaseService.users.updateOne({ _id: new ObjectId(user_id) }, [
+      {
+        $set: {
+          password: hashPassword(password),
+          forgot_password_token: '',
+          updated_at: `$$NOW`
+        }
+      }
+    ])
+  }
+
+  async getme(user_id: string) {
+    const user = await databaseService.users.findOne(
+      { _id: new ObjectId(user_id) },
+      {
+        projection: {
+          // 0: ko lay, 1: lay
+          password: 0,
+          email_verify_token: 0,
+          forgot_password_token: 0
+        }
+      }
+    )
+    if (!user) {
+      throw new ErrorWithStatus({
+        status: HTTP_STATUS.NOT_FOUND,
+        message: USERS_MESSAGES.USER_NOT_FOUND
+      })
+    }
+    return user
+  }
+
+  async updateMe({ user_id, payload }: { user_id: string; payload: UpdateMeReqBody }) {
+    // payload này có 2 khuyết điểm
+    // 1. mình ko biết người dùng truyền lên cái gì
+    // 2. nếu có truyền lên dateOfBirth thì nó sẽ là string => date
+    const _payload = payload.date_of_birth ? { ...payload, date_of_birth: new Date(payload.date_of_birth) } : payload
+    // 3. nếu có truyền lên username thì mình phải cho username là unique
+    if (_payload.username) {
+      // tìm xem có ai bị trùng ko
+      const user = await databaseService.users.findOne({ username: _payload.username })
+      if (user) {
+        throw new ErrorWithStatus({
+          status: HTTP_STATUS.FORBIDDEN,
+          message: USERS_MESSAGES.USERNAME_ALREADY_EXISTS
+        })
+      }
+    }
+    // vượt qua 2 cái chướng ngại vật đó thì update thôi
+    const userInfor = await databaseService.users.findOneAndUpdate(
+      {
+        _id: new ObjectId(user_id)
+      },
+      [
+        {
+          $set: {
+            ...payload,
+            updated_at: `$$NOW`
+          }
+        }
+      ],
+      {
+        returnDocument: 'after',
+        projection: {
+          password: 0,
+          email_verify_token: 0,
+          forgot_password_token: 0
+        }
+      }
+    )
+    return userInfor
+  }
+
+  async changePassword({
+    user_id,
+    old_password,
+    password
+  }: {
+    user_id: string
+    old_password: string
+    password: string
+  }) {
+    const user = await databaseService.users.findOne({
+      _id: new ObjectId(user_id),
+      password: hashPassword(old_password)
+    })
+    // nếu mà ko có user nào khớp
+    if (!user) {
+      throw new ErrorWithStatus({
+        status: HTTP_STATUS.UNAUTHORIZED,
+        message: USERS_MESSAGES.USER_NOT_FOUND
+      })
+    }
+    // nếu mà tìm được user từ password cũ thì tiến hành cập nhật
+    await databaseService.users.updateOne({ _id: new ObjectId(user_id) }, [
+      {
+        $set: {
+          password: hashPassword(password),
+          updated_at: `$$NOW`
+        }
+      }
+    ])
+  }
+
+  async refreshToken({ user_id, refresh_token }: { user_id: string; refresh_token: string }) {
+    // tạo 2 ac và rf (chưa tính đến vấn dề route timing)
+    const [access_token, new_refresh_token] = await Promise.all([
+      this.signAccessToken(user_id), //
+      this.signRefreshToken(user_id)
+    ])
+    // xóa mã cũ
+    await databaseService.refresh_tokens.deleteOne({ token: refresh_token })
+    // lưu mã mới
+    await databaseService.refresh_tokens.insertOne(
+      new RefreshToken({
+        token: new_refresh_token,
+        user_id: new ObjectId(user_id)
+      })
+    )
+    return {
+      access_token,
+      refresh_token: new_refresh_token
     }
   }
 }
